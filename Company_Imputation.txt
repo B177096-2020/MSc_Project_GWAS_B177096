@@ -1,0 +1,150 @@
+######################### Explain of the main script ########################
+#########################     Autor: MSc B177096     ########################
+
+# This is the second tutorial for genotype imputation
+# The method I used here is using SHAPEIT to infer the haplotypes underlying our study genotypes, and then passing these to IMPUTE2 for imputation.
+# In this part, people of eropean ancestry are included in analysis. After removing non-eropean samples, AncestryDNA, 23andMe, DNAland, MyHeritage and LivingDNA remain 608, 295, 74, 50 and 25 samples respectively. 
+# Imputation was performed by using "chunk method". To be more specific, each chromosome was splited into smaller chunks for analysis. Imputing a chromosome in chunks is a good computational strategy, 5 Mb (distance) was imputed at each time and 50 times in total (from 1 to 250). And this approach was completed by using the parameter "int" in IMPUTE2 software.
+# Note, this script only shows the processing of one comapny, but the process of data processing for five companies is almost the same.
+# Language: shell scripts
+# Software: SHAPEIT, IMPUTE2, PLINK 1.90
+
+
+#################################################################
+######################### START ANALYSIS ########################
+#################################################################
+
+##################
+##### Step 1 #####
+################## 
+
+# Download 1000 genome phase3
+
+# Chromosome 1~22:
+wget https://mathgen.stats.ox.ac.uk/impute/1000GP_Phase3.tgz
+
+# Chromosome X:
+wget https://mathgen.stats.ox.ac.uk/impute/1000GP_Phase3_chrX.tgz
+
+# Reserve them in a path:
+path=/ShapeIt/library/1000GP_Phase3
+
+##################
+##### Step 2 #####
+################## 
+
+# This step is to merge PED binary files of eropean ancestry.
+# Note, a list of eropean samples should be prepared at first (eg. AncestryDNA.Eropean.list). And 
+
+module load igmm/apps/plink/1.90b1g
+for i in {1..22} X
+do
+	cd chr$i
+	plink --bfile 102144_20200618002055.qc2 --merge-list ../AncestryDNA.Eropean.list --make-bed --out merged.eropean
+	cd ..
+done 
+
+##################
+##### Step 3 #####
+################## 
+
+# This step is for quality control, each company was processed the same way as the previous script. The only difference is I used eropean ancestry here.
+
+for i in {1..22} X
+do
+    cd chr$i
+    plink --bfile merged.eropean --maf 0.05 --geno 0.4 --hwe 0.0001 --make-bed --out chr$i.final.eropean.qc1 
+    plink --bfile chr$i.final.eropean.qc1 --geno 0.1 --mind 0.1 --make-bed --out chr$i.final.eropean.qc2 
+    plink --bfile chr$i.final.eropean.qc2 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.eropean.qc3
+    plink --bfile chr$i.final.eropean.qc3 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.eropean.qc4    
+    cd ..
+done
+
+##################
+##### Step 4 #####
+################## 
+
+# This step is to do pre-phasing by using SHAPEIT2. (apply to chr 1 ~ 22)
+# --input-bed: Eropean QC result (output of previous step)
+# -M: genetic map
+# --input-ref: reference.haplotypes.gz reference.legend.gz reference.sample (1000 genome phase3)
+# --output-max: to specify the output haplotypes/genotypes estimated by SHAPEIT
+
+for i in 22
+do
+    cd chr$i
+	shapeit --input-bed chr$i.final.eropean.qc4.bed chr$i.final.eropean.qc4.bim chr$i.final.eropean.qc4.fam -M ${path}/genetic_map_chr${i}_combined_b37.txt --input-ref ${path}/1000GP_Phase3_chr${i}.hap.gz ${path}/1000GP_Phase3_chr${i}.legend.gz ${path}/1000GP_Phase3.sample --output-max merged.eropean.phased.haps merged.eropean.phased.sample --output-log merged.eropean.output -T 8
+	cd ..
+done
+
+# If an exception is thrown, parameter "--exclude-snp merged.eropean.output.snp.strand.exclude" should be added to exclude some SNPs
+
+for i in 22
+do
+    cd chr$i
+	shapeit --input-bed chr$i.final.eropean.qc4.bed chr$i.final.eropean.qc4.bim chr$i.final.eropean.qc4.fam -M ${path}/genetic_map_chr${i}_combined_b37.txt --input-ref ${path}/1000GP_Phase3_chr${i}.hap.gz ${path}/1000GP_Phase3_chr${i}.legend.gz ${path}/1000GP_Phase3.sample --exclude-snp merged.eropean.output.snp.strand.exclude --output-max merged.eropean.phased.haps.new merged.eropean.phased.sample.new --output-log merged.eropean.output.new -T 8
+	cd ..
+done
+
+##################
+##### Step 5 #####
+################## 
+
+# This step is to do imputation by using IMPUTE2 within 5 companies. (apply to chr 1 ~ 22)
+# Firstly, creat a new bash file named 'Impute2.sh'. (The code is shown as follow)
+# Imputation is performed for 22 chromosomes by chunks. Specifically, I splitted the whole chromosome into chunks and then imputed each chunk (-int $CHUNK_START $CHUNK_END). Noet, the chunk region was set to 5MB. 
+# And Impute2.sh must be executed with 'chunk.sh'. (The code is shown as follow)
+# This step takes a large amount of time.
+
+## Impute2.sh Example: 
+
+###########################################################################################
+#!/bin/bash
+#$ -cwd
+
+CHR=$1
+CHUNK_START=`printf "%.0f" $2`
+CHUNK_END=`printf "%.0f" $3`
+
+IMPUTE2_EXEC={path}/library/1000GP_Phase3/impute2
+GENMAP_FILE={path}/library/1000GP_Phase3/genetic_map_chr${CHR}_combined_b37.txt
+GWAS_FILE={path}/AncestryDNA/chr${CHR}/merged.eropean.phased.haps.new
+REF_HAP={path}/library/1000GP_Phase3/1000GP_Phase3_chr${CHR}.hap.gz
+REF_LEGEND={path}/library/1000GP_Phase3/1000GP_Phase3_chr${CHR}.legend.gz
+OUTPUT_FILE={path}/AncestryDNA/chr${CHR}/chr${CHR}.impute2.pos.${CHUNK_START}-${CHUNK_END}
+
+$IMPUTE2_EXEC \
+    -use_prephased_g \
+    -m $GENMAP_FILE \
+    -known_haps_g $GWAS_FILE \
+    -h $REF_HAP \
+    -l $REF_LEGEND \
+    -Ne 20000 \
+    -int $CHUNK_START $CHUNK_END \
+    -o $OUTPUT_FILE \
+    -allow_large_regions
+
+
+## chunk.sh Example:
+
+./impute2.sh 1 1 5000000
+./impute2.sh 1 5000001 10000000
+./impute2.sh 1 10000001 15000000
+./impute2.sh 1 15000001 20000000
+./impute2.sh 1 20000001 25000000
+./impute2.sh 1 25000001 30000000
+./impute2.sh 1 30000001 35000000
+./impute2.sh 1 35000001 40000000
+./impute2.sh 1 40000001 45000000
+./impute2.sh 1 45000001 50000000
+./impute2.sh 1 50000001 55000000
+./impute2.sh 1 55000001 60000000
+./impute2.sh 1 60000001 65000000
+./impute2.sh 1 65000001 70000000
+./impute2.sh 1 70000001 75000000
+./impute2.sh 1 75000001 80000000
+./impute2.sh 1 80000001 85000000
+......
+
+
+#############################################################################################

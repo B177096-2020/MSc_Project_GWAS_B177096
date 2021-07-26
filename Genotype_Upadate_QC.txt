@@ -1,0 +1,277 @@
+######################### Explain of the main script ########################
+#########################     Autor: MSc B177096     ########################
+
+# This is the first tutorial for dealing with the genotype data within five companies
+# Data basic information: AncestryDNA cohort (705 samples, including 683 Eropean), 23andMe cohort (317 samples, including 295 Eropean), DNAland cohort (53 samples, including 50 Eropean) LivingDNA cohort (27 samples, including 25 Eropean), MyHeritage cohort(81 samples, including 75 Eropean). Note these raw data were allocated into five folders, each of which was given a name based on the company name.
+# This script mainly processed the following things: a) All the genotype data were transformed into 23andMe's format, which consisted 4 columns (e.g. rs3094315 1 742429 AG). b) Samples were aligned to the human reference genome hg37. Note, they were updated by chromosome. c) Merge bed format files of each sample within the 23 chromosomes and then merge chromosomes. d) Quality control was performed within each company since the overlap SNPs between them are very different.
+# Note, this script only shows the processing of one comapny, but the process of data processing for five companies is almost the same.
+# Language: R and shell scrips were used in the process of data processing. 
+# Software: Plink 1.90, R
+# Operating environment: Eddie
+
+#################################################################
+######################### START ANALYSIS ########################
+#################################################################
+
+##################
+##### Step 1 #####
+################## 
+
+# This step involves using shell commands (eg. awk, print, sed) to convert the genotyping data into 23andMe's format, and the code won't shown here. 
+
+##################
+##### Step 2 #####
+##################
+
+# This step is to generate binary PED files (*.bed, *.bim, *.fam) of all genotype files.
+# Note, 5 txt files (AncestryDNA.IDlist, 23andMe.IDlist, DNAland.IDlist, LivingDNA.IDlist, MyHeritage.IDlist) should be prepared at first, each of them contains the names of genotyping files.
+
+module add igmm/apps/plink/1.90b1g 
+
+for name in `cat AncestryDNA.IDlist`  
+do
+    plink --23file ${name} -out ${name}
+done
+
+##################
+##### Step 3 #####
+##################
+
+# This step is to extract positions and allele information from genome annotation files (hg37), and split the large file (~40G) according to chromosomes.
+
+# Download human reference genome (hg37) from dbSNP database 
+wget http://mirror.ufs.ac.za/datasets/ncbi/refseq/H_sapiens/annotation/GRCh37_latest/refseq_identifiers/GRCh37_latest_dbSNP_all.vcf.gz
+tar -zxvf GRCh37_latest_dbSNP_all.vcf.gz
+
+# qlogin in 
+qlogin -l h_vmem=64G
+
+# Remove the  first 28 rows
+tail -n +29 GRCh37_latest_dbSNP_all.vcf > GRCh37_noheaders
+
+# Extract first 5 columns
+cut -f 1-5 GRCh37_noheaders > GRCh37_noheaders_5columns
+
+# Load R and open it in R
+
+module load R
+R
+library(data.table)
+df <- fread("GRCh37_noheaders_5columns",data.table=F)
+
+# Extract right chromosomes in R and change chr build to number
+chr <- c(x,x,x,x,x,x) #25 chromosomes version number here
+chr.number <- c(1:24,"MT")
+df.qc1 <- df[which(df[,1] %in% chr),]
+for (i in 1:25){
+df.qc1[which(df.qc1[,1] == chr[i],1] <- chr.number[i]
+}
+
+# Extract bi-allelic SNPs
+df.qc2 <- df.qc1[which(nchar(df.qc1[,4]== 1 & nchar(df.qc1[,5]) ==1),]
+a1a2 <- c(at,ag,,,,) # 12 possible combinations of bi-allelic SNPs
+df.qc3 <- df.qc2[which(paste(df.qc2[,4],df.qc2[,5]) %in% a1a2),]
+
+# Split into chr and save
+for (i in 1:25){
+temp <- df.qc3[which(df.qc3[,1] == chr.number[i]),]
+fwrite(temp,paste0("GRCh37_chr",chr.number[i]]),quote=F,row.names=F,
+col.names=F,sep="\t")
+}
+
+##################
+##### Step 4 #####
+##################
+
+# This step is to split the genotyping binary file (*.bed, *.bim, *.fam) of each sample according to the 23 chromosomes (1-22, X)
+
+module add igmm/apps/plink/1.90b1g
+for i in {1..22} X 
+do
+  mkdir chr$i
+  while read line
+  do
+  plink --bfile raw_bed/$line --chr $i --make-bed --out chr$i/$line
+  done < AncestryDNA.IDlist
+done
+
+##################
+##### Step 5 #####
+##################
+
+# This step combines the R script to extract the imformation of overlap SNPs that between the dbSNP database and the company. In the end, overlap SNPs list files (*.qced.snplist) and map files (*.qced.map) which contain position information will be generated. It is worthy noting that this step was also processed according to different chromosomes.
+
+# qlogin
+qlogin -l h_vmem=16G
+cd ${path}/AncestryDNA
+
+# Merge all bim in one per chromosome
+for i in {1..22} X
+do
+cat chr$i/*.bim > chr$i.bim
+done
+
+# Note, here is the R script.
+module load R
+R
+library(data.table)
+for (i in c(1:22,"X")){
+db <- fread(paste0("../dbsnp/GRCh37_biallelicSNPs_chr",i),data.table=F)
+snp <- unique(fread(paste0("chr",i,".bim"),data.table=F)$V2)
+over.snplist <- intersect(db$rsid,snp)
+over.snpmap <- db[which(db$rsid %in% over.snplist),c(3,2)]
+write.table(over.snplist,paste0("chr",i,".qced.snplist"),quote=F,row.names=F,
+col.names=F)
+fwrite(over.snpmap,paste0("chr",i,".qced.map"),quote=F,row.names=F,
+col.names=F,sep="\t")
+rm(over.snplist,over.snpmap,db,snp) #to free memory
+}
+
+
+##################
+##### Step 6 #####
+##################
+
+# This step is to extract overlap SNPs for each sample and update positions to hg37 genome by plink 1.9. 
+# chr$i.qced.snplist and chr$i.qced.map were genrated in the previous step.
+
+# Extract overlap SNPs
+module load igmm/apps/plink/1.90b1g
+for i in {1..22} X
+do
+  while read line
+  do
+  plink --bfile chr$i/$line --extract chr$i.qced.snplist --make-bed --out chr$i/$line.qc1
+  done < AncestryDNA.IDlist
+done
+
+# Map positions in plink
+module load igmm/apps/plink/1.90b1g
+for i in {1..22} X 
+do
+  while read line
+  do
+  plink --bfile chr$i/$line.qc1 --update-map chr$i.qced.map --make-bed --out chr$i/$line.qc2
+  done < AncestryDNA.IDlist
+done
+
+
+##################
+##### Step 7 #####
+##################
+
+# This step is to change ID in *.fam using R and Unix command.
+
+# Change chromosome 1 at first
+module load R
+R
+id <- read.table("AncestryDNA.IDlist")
+iid <- unlist(strsplit(as.character(id[,1]),"_"))
+iid <- iid[2*c(1:nrow(id))-1]
+for (i in 1:length(iid)){
+temp <- read.table(paste0("chr1/",id[i,1],".qc2.fam"))
+temp[,1] <- iid[i]
+temp[,2] <- iid[i]
+write.table(temp,paste0("chr1/",id[i,1],".qc2.fam"),
+quote=F,row.names=F,col.names=F)
+}
+
+# Copy that for all chromsomes
+for i in {2..22} X 
+do
+	cp chr1/*.qc2.fam chr$i/
+done
+
+##################
+##### Step 8 #####
+##################
+
+# This step is to merge binary files (*.qc2.bed, *.qc2.bim, *.qc2.fam) for each chromosome, and then merge all chromosomes. 
+
+# Merge files for each chromosome. Note, a list (eg. Ancestry.mergelist) should be prepared at first, which contains sample ID (eg. 102439_20200619231603.qc2; each ID takes up one line). 
+module load igmm/apps/plink/1.90b1g
+for i in {1..22} X 
+do
+	cd /gpfs/igmmfs01/eddie/Quantgen-Students/Wanlin/AncestryDNA/chr$i
+	plink --bfile 102439_20200619231603.qc2 --merge-list ../Ancestry.mergelist --make-bed --out  merged
+	cd ..
+done
+
+# Merge all chromosomes' binary PED files. Note, a list (eg. mg.txt) should be prepared at first. The output PED file was used to do ancestry analysis.
+plink --bfile chr1/merged --merge-list mg.txt --make-bed --out AncestryDNA
+
+##################
+##### Step 9 #####
+##################
+
+# This step is to use Plink 1.9 for handling SNP data. After quality control, we will remove some markers and DNA samples.
+# Since the quality of SNP data is different in the five companies, I used different parameters for filtering data. 
+# The first command line is to remove some SNPs in order to preserve much more samples.
+# In the end, samples and markers with low call rate (<90%) were removed and. Additionly, all SNPs with MAF > 0.05 and HWE > 0.0001
+
+# AncestryDNA cohort
+for i in {1..22} X
+do
+    cd chr$i
+    plink --bfile merged --maf 0.05 --geno 0.4 --hwe 0.0001 --make-bed --out chr$i.final.qc1 
+    plink --bfile chr$i.final.qc1 --geno 0.1 --mind 0.1 --make-bed --out chr$i.final.qc2 
+    plink --bfile chr$i.final.qc2 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc3
+    plink --bfile chr$i.final.qc3 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc4 
+    cd ..
+done
+
+# 23andMe cohort
+for i in {1..22} 
+do
+    cd chr$i
+    plink --bfile merged --maf 0.05 --geno 0.2 --hwe 0.0001 --make-bed --out chr$i.final.qc1 
+    plink --bfile chr$i.final.qc1 --geno 0.1 --mind 0.1 --make-bed --out chr$i.final.qc2 
+    plink --bfile chr$i.final.qc2 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc3
+    plink --bfile chr$i.final.qc3 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc4 
+    cd ..
+done
+
+# MyHeritage cohort
+for i in {1..22} 
+do
+    cd chr$i
+    plink --bfile merged --maf 0.05 --geno 0.4 --hwe 0.0001 --make-bed --out chr$i.final.qc1 
+    plink --bfile chr$i.final.qc1 --geno 0.1 --mind 0.1 --make-bed --out chr$i.final.qc2 
+    plink --bfile chr$i.final.qc2 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc3
+    plink --bfile chr$i.final.qc3 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc4 
+    cd ..
+done
+
+# DNAland cohort
+for i in {1..22} 
+do
+    cd chr$i
+    plink --bfile merged --geno 0.1 --mind 0.1 --make-bed --out chr$i.final.qc1 
+    plink --bfile chr$i.final.qc1 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc2
+    plink --bfile chr$i.final.qc2 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc3
+    cd ..
+done
+
+# LivingDNA cohort
+for i in {1..22} 
+do
+    cd chr$i
+    plink --bfile merged --maf 0.05 --geno 0.2 --hwe 0.0001 --make-bed --out chr$i.final.qc1 
+    plink --bfile chr$i.final.qc1 --geno 0.1 --mind 0.1 --make-bed --out chr$i.final.qc2 
+    plink --bfile chr$i.final.qc2 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc3
+    plink --bfile chr$i.final.qc3 --geno 0.1 --maf 0.05  --mind 0.1 --hwe 0.0001 --make-bed --out chr$i.final.qc4 
+    cd ..
+done
+
+
+
+
+
+
+
+
+
+
+
+
+
