@@ -1,0 +1,76 @@
+######################### Explain of the main script ########################
+#########################     Autor: MSc B177096     ########################
+
+# This is the tutorial for main analyses : a) GWAS analysis b) calculating SNP-based heritabilty and genetic correlations c) PRS analysis
+# Note, this script only shows analysis process for COVID-19 (Remaining are the same).
+
+
+#########################     GWAS analysis     ########################
+
+# Software: PLINK 1.9
+# Plink format data preparation: a) All_company.impute (After genotype imputation and post-imputation QC, and merge for five companies) b) Phenotype files (In total 28 phenotype files for COVID-19 (two defination of cases) and 26 COVID-19 symptoms) c) covariate_1.txt: ajusted for SEX, AGE, PC1, PC2, PC3, PC4; covariate_2.txt: ajusted for SEX, AGE, PC1, PC2, PC3, PC4 and 'COVID-19 condition'. d) all.list: non-Enropean ancestry individuals information, that identified using PCA analysis before.
+
+module add igmm/apps/plink/1.90b1g
+1) plink --bfile All_company.impute --pheno COVID-19.txt --covar covariate_1.txt --remove all.list --logistic -ci 0.95 --beta --out COVID-19
+2) plink --bfile All_company.impute --pheno COVID-19.txt --covar covariate_2.txt --remove all.list --logistic -ci 0.95 --beta --out COVID-19
+
+#########################     Genetic parameters     ########################
+
+# Software: GCTA 64, PLINK 1.9
+# Data preparation: a) genetic relationship matrix (GRM) b) 
+
+# Generating a list of non-(highly)correlated SNPs, and prune the SNPs using the command --indep-pairwise
+plink --bfile All_company.impute --indep-pairwise 50 5 0.5 --out All_company.prune
+
+# Generating PLINK format data
+plink --bfile All_company.impute --remove all.list --extract All_company.prune.prune.in --make-bed --out All_company.prune
+
+# Generating GRM matrix
+./gcta64 --bfile All_company.prune --make-grm --out All_company
+
+# Calculating SNP-based heritabilities
+./gcta64 --grm All_company --qcovar covariate_1.txt --pheno phenotype.txt --mpheno 1 --reml --reml-bivar-prevalence 0.1 0.05 --out trait1
+
+# Calculating genetic correlations
+for i in {2..27}
+do
+	./gcta64 --reml-bivar 1 $i --reml-lrt 1 $i --grm All_company --qcovar covariate_1.txt --pheno phenotype.txt --reml-bivar-lrt-rg 0 --out test_1_$i --reml-maxit 200
+done
+
+
+#########################     PRS analysis     ########################
+
+# Using in-house UNIX commands to prepare for GWAS summary statistics
+
+# Example (COVID-19):
+
+plink \
+    --bfile All_company.impute \
+    --clump-p1 1 \
+    --clump-r2 0.1 \
+    --clump-kb 250 \
+    --clump genomicc.EUR (GWAS summary) \
+    --clump-snp-field SNP \
+    --out erola
+
+cat genomicc.EUR | awk '{print $2" "$9}' > SNP.pvalue
+sort -t  $'\t' -k 2,2 -u genomicc.EUR  >  genomicc.EUR.new
+echo "0.05 0.00 0.05" > range_list 
+
+plink \
+    --bfile All_company.impute \
+    --score genomicc.EUR 2 4 7 header \
+    --q-score-range range_list SNP.pvalue.new \
+    --extract erola.clumped \
+    --out erola.out
+
+
+
+
+
+
+
+
+
+
+
